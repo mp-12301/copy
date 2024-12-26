@@ -1,4 +1,4 @@
-import Endpoint from '../entities/endpoint';
+import Endpoint from "../entities/endpoint.ts";
 
 export default interface Storage {
   getEndpoints(): Endpoint[];
