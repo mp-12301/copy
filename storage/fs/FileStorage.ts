@@ -1,81 +1,196 @@
 import * as path from "jsr:@std/path";
 
-import Endpoint from "../../entities/endpoint.ts";
 import Storage from "../Storage.ts";
+import Resource from "../../entities/resource.ts";
+import Context from "../../entities/context.ts";
 
 const NOT_FOUND = "ENOENT";
-const ROOT_FOLDER = "__storage";
 
 export default class FileStorage implements Storage {
-  getEndpoints(): Endpoint[] {
-    return [
-      {
-        id: "123",
-        name: "foobar",
-        context: "mock",
-        version: "1",
-        resource: "shoes",
-      },
-    ];
+  private root_folder = "__storage";
+
+  private contexts: Context[] = [];
+
+  constructor(rootPath: string) {
+    this.root_folder = rootPath;
   }
 
-  async setEndpoint(endpoint: Endpoint): Promise<void> {
-    const { context, name } = endpoint;
+  async init() {
+    const rootInfo = await this.checkFile(this.root_folder);
 
-    await this.checkRootFolder();
+    if (rootInfo === null) {
+      this.makeDir(this.root_folder);
+    }
 
-    await this.checkContextFolder(context);
+    const contextsAtRoot = this.readDir(this.root_folder);
 
-    await this.checkEndpointFolder(context, name);
+    for await (const context of contextsAtRoot) {
+      if (context.isDirectory) {
+        const resourcesAtContext = this.readDir(
+          path.join(this.root_folder, context.name),
+        );
+
+        const newContext = {
+          id: context.name,
+          resources: [] as Resource[],
+        };
+        this.contexts.push(newContext);
+
+        for await (const resource of resourcesAtContext) {
+          const data = await this.readFile(
+            path.join(this.root_folder, context.name, resource.name),
+          );
+
+          let schema;
+          try {
+            schema = JSON.parse(data);
+          } catch (_e) {
+            schema = null;
+          }
+
+          newContext.resources.push({
+            id: resource.name,
+            schema,
+          });
+        }
+      }
+    }
   }
 
-  private async checkEndpointFolder(
-    contextFolderPath: string,
-    endpointFilePath: string,
-  ): Promise<void> {
-    const pathToEndpointFile = path.join(
-      ROOT_FOLDER,
-      contextFolderPath,
-      endpointFilePath,
+  getContext(contextId: string): Context | null {
+    return this.contexts.find((context) => context.id === contextId) || null;
+  }
+
+  createContext(context: Context): void {
+    const { id: contextName } = context;
+    const contextPath = path.join(this.root_folder, contextName);
+
+    this.makeDir(contextPath);
+
+    this.contexts.push({
+      id: contextName,
+      resources: [] as Resource[],
+    });
+  }
+
+  getAllContexts(): Context[] {
+    return this.contexts;
+  }
+
+  removeContext(contextId: string): Promise<void> {
+    const context = this.getContext(contextId);
+
+    if (context) {
+      const contextIndex = this.contexts.findIndex((context) =>
+        context.id === context.id
+      );
+      this.contexts.splice(contextIndex, 1);
+
+      const contextPath = path.join(this.root_folder, contextId);
+      return this.removeDir(contextPath);
+    }
+
+    return Promise.reject();
+  }
+
+  getResource(contextId: string, resourceId: string): Resource | null {
+    const context = this.getContext(contextId);
+    if (context) {
+      return context.resources.find((resource) => resource.id === resourceId) ||
+        null;
+    }
+    return null;
+  }
+
+  setResource(contextId: string, resource: Resource): Promise<void> {
+    const schemaStr = getSchemaStr(resource);
+    const pathToResource = path.join(
+      this.root_folder,
+      contextId,
+      resource.id,
     );
 
-    const endpointFileInfo = await this.checkFile(pathToEndpointFile);
+    const resourceToUpdate = this.getResource(contextId, resource.id);
+    if (resourceToUpdate) {
+      resourceToUpdate.schema = resource.schema || null;
+    } else {
+      const context = this.getContext(contextId);
+      if (context) {
+        context.resources.push(resource);
+      }
+    }
 
-    if (endpointFileInfo === null) {
-      const textEncoder = new TextEncoder();
-      const data = textEncoder.encode(
-        "This is a subject we should not talk about",
+    return this.writeFile(pathToResource, schemaStr);
+
+    function getSchemaStr(resource: Resource) {
+      let schemaStr = "";
+      if (resource.schema) {
+        try {
+          schemaStr = JSON.stringify(resource.schema);
+        } catch (_e) {
+          schemaStr = "";
+        }
+      }
+      return schemaStr;
+    }
+  }
+
+  removeResource(contextId: string, resourceId: string): Promise<void> {
+    const context = this.getContext(contextId);
+    if (context) {
+      const resourceIndex = context.resources.findIndex((resource) =>
+        resource.id === resourceId
       );
-      await Deno.writeFile(pathToEndpointFile, data);
     }
+    const pathToResourceFile = path.join(
+      this.root_folder,
+      contextId,
+      resourceId,
+    );
+    return this.removeFile(pathToResourceFile);
   }
 
-  private async checkContextFolder(contextFolderPath: string) {
-    const pathToContext = path.join(ROOT_FOLDER, contextFolderPath);
-
-    const contextInfo = await this.checkFile(pathToContext);
-
-    if (contextInfo === null) {
-      Deno.mkdir(pathToContext);
+  getAllResources(contextId: string): Resource[] {
+    const context = this.getContext(contextId);
+    if (context) {
+      return context.resources;
     }
+    return [];
   }
 
-  private async checkRootFolder() {
-    const rootInfo = await this.checkFile(ROOT_FOLDER);
-    if (rootInfo === null) {
-      Deno.mkdir(ROOT_FOLDER);
-    }
+  private writeFile(pathFile: string, data: string): Promise<void> {
+    const encoder = new TextEncoder();
+    const dataEncoded = encoder.encode(data);
+    return Deno.writeFile(pathFile, dataEncoded);
+  }
+
+  private async readFile(pathFile: string): Promise<string> {
+    const decoder = new TextDecoder("utf-8");
+    const data = await Deno.readFile(pathFile);
+    return decoder.decode(data);
+  }
+
+  private removeFile(pathFile: string): Promise<void> {
+    return Deno.remove(pathFile);
+  }
+
+  private makeDir(pathDir: string): Promise<void> {
+    return Deno.mkdir(pathDir);
+  }
+
+  private readDir(pathDir: string): AsyncIterable<Deno.DirEntry> {
+    return Deno.readDir(pathDir);
+  }
+
+  private async removeDir(pathDir: string): Promise<void> {
   }
 
   private async checkFile(pathFile: string): Promise<Deno.FileInfo | null> {
     let info;
     try {
       info = await Deno.stat(pathFile);
-    } catch (error: unknown) {
-      if (error.code !== NOT_FOUND) {
-        throw error;
-      }
-      return null;
+    } catch (_e) {
+      info = null;
     }
     return info;
   }

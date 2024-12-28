@@ -1,7 +1,9 @@
+import Schema from "./schema.ts";
+
 export default interface Endpoint {
-  id: string;
-  name: string;
+  description?: string;
   context: string;
-  version: string;
+  version?: string;
   resource: string;
+  schema: Schema;
 }

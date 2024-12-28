@@ -1,2 +1,4 @@
 __storage/
-.vscode
+__test/
+.vscode/
+coverage/
